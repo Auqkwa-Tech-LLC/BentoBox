@@ -20,6 +20,7 @@ import world.bentobox.bentobox.api.user.Notifier;
 import world.bentobox.bentobox.api.user.User;
 import world.bentobox.bentobox.commands.BentoBoxCommand;
 import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.debug.DebugUtil;
 import world.bentobox.bentobox.hooks.DynmapHook;
 import world.bentobox.bentobox.hooks.MultiverseCoreHook;
 import world.bentobox.bentobox.hooks.VaultHook;
@@ -95,6 +96,8 @@ public class BentoBox extends JavaPlugin {
 
     @Override
     public void onEnable(){
+        DebugUtil.init(this);
+
         if (!ServerCompatibility.getInstance().checkCompatibility().isCanLaunch()) {
             // The server's most likely incompatible.
             // Show a warning

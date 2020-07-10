@@ -69,4 +69,12 @@ public abstract class SQLDatabaseConnector implements DatabaseConnector {
         return connection;
     }
 
+    public Connection actuallyCreateConnection() {
+        try {
+            return DriverManager.getConnection(connectionUrl, dbSettings.getUsername(), dbSettings.getPassword());
+        } catch (SQLException ex) {
+            Bukkit.getLogger().severe("Could not connect to the database! " + ex.getMessage());
+            throw new RuntimeException(ex);
+        }
+    }
 }

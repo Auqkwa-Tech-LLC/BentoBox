@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 import org.bukkit.Bukkit;
 import org.eclipse.jdt.annotation.NonNull;
@@ -21,6 +22,7 @@ import world.bentobox.bentobox.BentoBox;
 import world.bentobox.bentobox.database.DatabaseConnector;
 import world.bentobox.bentobox.database.json.AbstractJSONDatabaseHandler;
 import world.bentobox.bentobox.database.objects.DataObject;
+import world.bentobox.bentobox.debug.DebugUtil;
 
 /**
  *
@@ -35,6 +37,7 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
 
     private static final String COULD_NOT_LOAD_OBJECTS = "Could not load objects ";
     private static final String COULD_NOT_LOAD_OBJECT = "Could not load object ";
+    public static final int CONNECTION_POOL_MAX = 16;
 
     /**
      * Connection to the database
@@ -45,6 +48,8 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
      * SQL configuration
      */
     private SQLConfiguration sqlConfig;
+
+    private ConcurrentLinkedDeque<Connection> connectionPool = new ConcurrentLinkedDeque<>();
 
     /**
      * Handles the connection to the database and creation of the initial database schema (tables) for
@@ -61,6 +66,35 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
             // Check if the table exists in the database and if not, create it
             createSchema();
         }
+    }
+
+    public Connection getConnectionFromPool() {
+        Connection connection = connectionPool.poll();
+        try {
+            if (connection != null && connection.isClosed()) {
+                connection = null;
+            }
+        } catch (SQLException throwables) {
+            throwables.printStackTrace();
+        }
+
+        if (connection == null) {
+            connection = ((SQLDatabaseConnector) databaseConnector).actuallyCreateConnection();
+        }
+        return connection;
+    }
+
+    public void releaseConnectionToPool(Connection connection) {
+        if (connectionPool.size() >= CONNECTION_POOL_MAX) {
+            try {
+                connection.close();
+                return;
+            } catch (SQLException throwables) {
+                throwables.printStackTrace();
+            }
+        }
+
+        connectionPool.offer(connection);
     }
 
     /**
@@ -109,6 +143,7 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
 
     private List<T> loadIt(Statement preparedStatement) {
         List<T> list = new ArrayList<>();
+        DebugUtil.checkMainThread("preparedStatement.executeQuery(sqlConfig.getLoadObjectsSQL())");
         try (ResultSet resultSet = preparedStatement.executeQuery(sqlConfig.getLoadObjectsSQL())) {
             // Load all the results
             Gson gson = getGson();
@@ -134,20 +169,26 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
 
     @Override
     public T loadObject(@NonNull String uniqueId) {
-        try (PreparedStatement preparedStatement = connection.prepareStatement(sqlConfig.getLoadObjectSQL())) {
-            // UniqueId needs to be placed in quotes
-            preparedStatement.setString(1, "\"" + uniqueId + "\"");
-            try (ResultSet resultSet = preparedStatement.executeQuery()) {
-                if (resultSet.next()) {
-                    // If there is a result, we only want/need the first one
-                    Gson gson = getGson();
-                    return gson.fromJson(resultSet.getString("json"), dataObject);
+        Connection connection = getConnectionFromPool();
+        try {
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sqlConfig.getLoadObjectSQL())) {
+                // UniqueId needs to be placed in quotes
+                preparedStatement.setString(1, "\"" + uniqueId + "\"");
+                DebugUtil.checkMainThread("preparedStatement.executeQuery()");
+                try (ResultSet resultSet = preparedStatement.executeQuery()) {
+                    if (resultSet.next()) {
+                        // If there is a result, we only want/need the first one
+                        Gson gson = getGson();
+                        return gson.fromJson(resultSet.getString("json"), dataObject);
+                    }
+                } catch (Exception e) {
+                    plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
                 }
-            } catch (Exception e) {
+            } catch (SQLException e) {
                 plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
             }
-        } catch (SQLException e) {
-            plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
+        } finally {
+            releaseConnectionToPool(connection);
         }
         return null;
     }
@@ -174,14 +215,19 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
     }
 
     private void store(CompletableFuture<Boolean> completableFuture, String name, String toStore, String sb) {
-        try (PreparedStatement preparedStatement = connection.prepareStatement(sb)) {
-            preparedStatement.setString(1, toStore);
-            preparedStatement.setString(2, toStore);
-            preparedStatement.execute();
-            completableFuture.complete(true);
-        } catch (SQLException e) {
-            plugin.logError("Could not save object " + name + " " + e.getMessage());
-            completableFuture.complete(false);
+        Connection connection = getConnectionFromPool();
+        try {
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sb)) {
+                preparedStatement.setString(1, toStore);
+                preparedStatement.setString(2, toStore);
+                preparedStatement.execute();
+                completableFuture.complete(true);
+            } catch (SQLException e) {
+                plugin.logError("Could not save object " + name + " " + e.getMessage());
+                completableFuture.complete(false);
+            }
+        } finally {
+            releaseConnectionToPool(connection);
         }
     }
 
@@ -194,12 +240,17 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
     }
 
     private void delete(String uniqueId) {
-        try (PreparedStatement preparedStatement = connection.prepareStatement(sqlConfig.getDeleteObjectSQL())) {
-            // UniqueId needs to be placed in quotes
-            preparedStatement.setString(1, "\"" + uniqueId + "\"");
-            preparedStatement.execute();
-        } catch (Exception e) {
-            plugin.logError("Could not delete object " + plugin.getSettings().getDatabasePrefix() + dataObject.getCanonicalName() + " " + uniqueId + " " + e.getMessage());
+        Connection connection = getConnectionFromPool();
+        try {
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sqlConfig.getDeleteObjectSQL())) {
+                // UniqueId needs to be placed in quotes
+                preparedStatement.setString(1, "\"" + uniqueId + "\"");
+                preparedStatement.execute();
+            } catch (Exception e) {
+                plugin.logError("Could not delete object " + plugin.getSettings().getDatabasePrefix() + dataObject.getCanonicalName() + " " + uniqueId + " " + e.getMessage());
+            }
+        } finally {
+            releaseConnectionToPool(connection);
         }
     }
 
@@ -224,17 +275,23 @@ public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T> {
 
     @Override
     public boolean objectExists(String uniqueId) {
-        // Query to see if this key exists
-        try (PreparedStatement preparedStatement = connection.prepareStatement(sqlConfig.getObjectExistsSQL())) {
-            // UniqueId needs to be placed in quotes
-            preparedStatement.setString(1, "\"" + uniqueId + "\"");
-            try (ResultSet resultSet = preparedStatement.executeQuery()) {
-                if (resultSet.next()) {
-                    return resultSet.getBoolean(1);
+        Connection connection = getConnectionFromPool();
+        try {
+            // Query to see if this key exists
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sqlConfig.getObjectExistsSQL())) {
+                // UniqueId needs to be placed in quotes
+                preparedStatement.setString(1, "\"" + uniqueId + "\"");
+                DebugUtil.checkMainThread("preparedStatement.executeQuery()");
+                try (ResultSet resultSet = preparedStatement.executeQuery()) {
+                    if (resultSet.next()) {
+                        return resultSet.getBoolean(1);
+                    }
                 }
+            } catch (SQLException e) {
+                plugin.logError("Could not check if key exists in database! " + uniqueId + " " + e.getMessage());
             }
-        } catch (SQLException e) {
-            plugin.logError("Could not check if key exists in database! " + uniqueId + " " + e.getMessage());
+        } finally {
+            releaseConnectionToPool(connection);
         }
         return false;
     }

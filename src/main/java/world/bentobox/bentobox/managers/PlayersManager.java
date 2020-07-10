@@ -2,12 +2,13 @@ package world.bentobox.bentobox.managers;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -22,6 +23,7 @@ import world.bentobox.bentobox.api.user.User;
 import world.bentobox.bentobox.database.Database;
 import world.bentobox.bentobox.database.objects.Names;
 import world.bentobox.bentobox.database.objects.Players;
+import world.bentobox.bentobox.debug.DebugUtil;
 
 public class PlayersManager {
 
@@ -47,7 +49,7 @@ public class PlayersManager {
         handler = new Database<>(plugin, Players.class);
         // Set up the names database
         names = new Database<>(plugin, Names.class);
-        playerCache = new HashMap<>();
+        playerCache = new ConcurrentHashMap<>();
         inTeleport = new HashSet<>();
     }
 
@@ -141,16 +143,20 @@ public class PlayersManager {
             if (handler.objectExists(playerUUID.toString())) {
                 player = handler.loadObject(playerUUID.toString());
                 if (player == null) {
-                    player = new Players(plugin, playerUUID);
+                    player = createSyncPlayer(playerUUID);
                     // Corrupted database entry
                     plugin.logError("Corrupted player database entry for " + playerUUID + " - unrecoverable. Recreated.");
                     player.setUniqueId(playerUUID.toString());
                 }
             } else {
-                player = new Players(plugin, playerUUID);
+                player = createSyncPlayer(playerUUID);
             }
             playerCache.put(playerUUID, player);
         }
+    }
+
+    public Players createSyncPlayer(UUID playerUUID) {
+        return DebugUtil.runOnMainThread(() -> new Players(plugin, playerUUID));
     }
 
     /**

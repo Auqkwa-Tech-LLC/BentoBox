@@ -11,6 +11,7 @@ import org.bukkit.World;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -40,6 +41,12 @@ public class JoinLeaveListener implements Listener {
     public JoinLeaveListener(@NonNull BentoBox plugin) {
         this.plugin = plugin;
         players = plugin.getPlayers();
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
+    public void onAsyncPlayerPreLogin(final AsyncPlayerPreLoginEvent event) {
+        UUID playerUUID = event.getUniqueId();
+        players.addPlayer(playerUUID);
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
